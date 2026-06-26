@@ -1513,6 +1513,15 @@ document.getElementById('startBtn').addEventListener('click', () => {
   gameState = 'play';
 });
 document.getElementById('restartBtn').addEventListener('click', () => location.reload());
+
+// On returning to the tab: reset the delta-time baseline (so the first frame
+// back doesn't jump) and resume audio that the browser auto-suspended.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    lastT = 0;
+    if (actx && actx.state === 'suspended') actx.resume();
+  }
+});
 </script>
 </body>
 </html>

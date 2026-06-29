@@ -849,6 +849,7 @@ addEventListener('keyup', e => {
 // ─────────────────────────────────────────────
 let actx = null, master = null, engineGain = null, muted = false;
 let musicGain = null, seqTimer = null, seqStep = 0, nextNoteT = 0;
+let fxReverb = null;   // shared reverb send — ties the SFX into one synthwave space
 function initAudio() {
   if (actx) { if (actx.state === 'suspended') actx.resume(); return; }
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -856,11 +857,31 @@ function initAudio() {
   actx = new AC();
   master = actx.createGain(); master.gain.value = muted ? 0 : 0.85; master.connect(actx.destination);
 
-  // (1) Engine hum — low sawtooth through a lowpass, gain ramps with movement
+  // (0) Reverb bus — procedural impulse (exp-decaying noise), shared SFX send.
+  //     A common space is what makes the effects sit inside the synthwave mix.
+  fxReverb = actx.createConvolver();
+  const irLen = Math.floor(actx.sampleRate * 1.5);
+  const ir = actx.createBuffer(2, irLen, actx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    for (let i = 0; i < irLen; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / irLen, 2.6);
+  }
+  fxReverb.buffer = ir;
+  const verbTone = actx.createBiquadFilter(); verbTone.type = 'lowpass'; verbTone.frequency.value = 3200; // warm tail
+  const verbWet = actx.createGain(); verbWet.gain.value = 0.9;
+  fxReverb.connect(verbTone); verbTone.connect(verbWet); verbWet.connect(master);
+
+  // (1) Engine — warm detuned analog synth (saws + a fifth) through a resonant,
+  //     LFO-swept lowpass; gain ramps with movement. Reads as a synth, not a buzz.
   engineGain = actx.createGain(); engineGain.gain.value = 0;
-  const eo = actx.createOscillator(); eo.type = 'sawtooth'; eo.frequency.value = 56;
-  const elp = actx.createBiquadFilter(); elp.type = 'lowpass'; elp.frequency.value = 200;
-  eo.connect(elp); elp.connect(engineGain); engineGain.connect(master); eo.start();
+  const elp = actx.createBiquadFilter(); elp.type = 'lowpass'; elp.frequency.value = 230; elp.Q.value = 7;
+  [56, 56.5, 84].forEach(f => {
+    const o = actx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.connect(elp); o.start();
+  });
+  elp.connect(engineGain); engineGain.connect(master);
+  const eLfo = actx.createOscillator(); eLfo.frequency.value = 5.5;            // subtle pulse/movement
+  const eLfoG = actx.createGain(); eLfoG.gain.value = 55;
+  eLfo.connect(eLfoG); eLfoG.connect(elp.frequency); eLfo.start();
 
   // (2) Synthwave bed — low sub drone under the music for warmth
   const ag = actx.createGain(); ag.gain.value = 0.035; ag.connect(master);
@@ -962,16 +983,20 @@ function startMusic() {
   }, 25);
 }
 
-function tone(freq, dur, type, vol, slideTo) {
+function sendVerb(g, amt) {                   // route a voice's output to the shared reverb
+  if (!amt || !fxReverb) return;
+  const s = actx.createGain(); s.gain.value = amt; g.connect(s); s.connect(fxReverb);
+}
+function tone(freq, dur, type, vol, slideTo, verb) {
   if (!actx || muted) return;
   const t = actx.currentTime;
   const o = actx.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t);
   if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
   const g = actx.createGain(); g.gain.setValueAtTime(vol, t);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+  o.connect(g); g.connect(master); sendVerb(g, verb); o.start(t); o.stop(t + dur + 0.02);
 }
-function noise(dur, vol, lpStart, lpEnd) {
+function noise(dur, vol, lpStart, lpEnd, verb) {
   if (!actx || muted) return;
   const t = actx.currentTime;
   const n = actx.createBufferSource();
@@ -982,20 +1007,28 @@ function noise(dur, vol, lpStart, lpEnd) {
   const lp = actx.createBiquadFilter(); lp.type = 'lowpass';
   lp.frequency.setValueAtTime(lpStart, t); lp.frequency.exponentialRampToValueAtTime(lpEnd, t + dur);
   const g = actx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  n.connect(lp); lp.connect(g); g.connect(master); n.start(t); n.stop(t + dur + 0.02);
+  n.connect(lp); lp.connect(g); g.connect(master); sendVerb(g, verb); n.start(t); n.stop(t + dur + 0.02);
 }
-// SFX tuned to the synthwave palette — neon saw zaps + filtered booms + warm synth chimes.
-const sfxFire      = () => { tone(1150, 0.12, 'sawtooth', 0.12, 320); noise(0.03, 0.06, 6000, 2000); }; // (3) neon laser zap
-const sfxFireEnemy = () => tone(380, 0.10, 'sawtooth', 0.05, 130);                                       // (3) enemy launch (low/quiet, distinct)
-const sfxBoom      = (big) => {                                                                          // (4) blast
-  noise(0.05, big ? 0.46 : 0.32, 6000, 1200);                             // attack crack
-  noise(big ? 0.6 : 0.34, big ? 0.4 : 0.26, 1000, 40);                    // filtered body/tail
-  tone(big ? 100 : 140, big ? 0.34 : 0.24, 'sine', big ? 0.3 : 0.2, big ? 32 : 46);  // clean sub thump (punch)
+// SFX in the synthwave palette — detuned analog saws + long sweeps, all sent to the
+// shared reverb so they breathe in the same neon space as the music.
+const sfxFire      = () => {                                                            // (3) neon laser zap
+  tone(1300, 0.24, 'sawtooth', 0.10, 300, 0.45);
+  tone(1308, 0.24, 'sawtooth', 0.07, 302, 0.45);                          // slight detune = width
+  noise(0.03, 0.05, 6000, 2000);                                          // tiny transient
 };
-const sfxImpact    = () => { noise(0.06, 0.18, 3400, 600); tone(500, 0.05, 'sawtooth', 0.06, 200); };    // (5) crisp wall/brick tick
-const sfxPowerup   = () => [659, 880, 1175, 1568].forEach((f, i) => setTimeout(() => {                   // (6) warm rising synth chime
-  tone(f, 0.18, 'sawtooth', 0.085); tone(f * 1.5, 0.18, 'triangle', 0.04);
-}, i * 80));
+const sfxFireEnemy = () => tone(440, 0.18, 'sawtooth', 0.045, 120, 0.35);                // (3) enemy launch (low/quiet, distinct)
+const sfxBoom      = (big) => {                                                          // (4) blast (gated-reverb feel)
+  noise(0.05, big ? 0.42 : 0.3, 5000, 1000);                              // attack crack
+  noise(big ? 0.55 : 0.32, big ? 0.36 : 0.24, 900, 40, big ? 0.55 : 0.35);// filtered body + reverb tail
+  tone(big ? 100 : 140, big ? 0.4 : 0.28, 'sine', big ? 0.3 : 0.2, big ? 32 : 46, 0.3);  // clean sub thump
+  tone(big ? 520 : 680, big ? 0.34 : 0.22, 'sawtooth', 0.06, big ? 90 : 130, 0.5);       // downward synth sweep tail
+};
+const sfxImpact    = () => { noise(0.05, 0.16, 3000, 500, 0.3); tone(560, 0.07, 'sawtooth', 0.05, 240, 0.3); };  // (5) wall/brick tick
+const sfxPowerup   = () => [659, 880, 1175, 1568].forEach((f, i) => setTimeout(() => {   // (6) lush rising synth arp
+  tone(f, 0.24, 'sawtooth', 0.07, undefined, 0.55);
+  tone(f * 1.005, 0.24, 'sawtooth', 0.05, undefined, 0.55);              // detune shimmer
+  tone(f * 2, 0.24, 'triangle', 0.03, undefined, 0.55);
+}, i * 90));
 function setEngine(on) { if (engineGain && actx) engineGain.gain.setTargetAtTime(on ? 0.13 : 0, actx.currentTime, 0.07); }
 function toggleMute() {
   muted = !muted;

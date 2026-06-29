@@ -1011,12 +1011,29 @@ function noise(dur, vol, lpStart, lpEnd, verb) {
 }
 // SFX in the synthwave palette — detuned analog saws + long sweeps, all sent to the
 // shared reverb so they breathe in the same neon space as the music.
-const sfxFire      = () => {                                                            // (3) neon laser zap
-  tone(1300, 0.24, 'sawtooth', 0.10, 300, 0.45);
-  tone(1308, 0.24, 'sawtooth', 0.07, 302, 0.45);                          // slight detune = width
-  noise(0.03, 0.05, 6000, 2000);                                          // tiny transient
-};
-const sfxFireEnemy = () => tone(440, 0.18, 'sawtooth', 0.045, 120, 0.35);                // (3) enemy launch (low/quiet, distinct)
+// (3) Shot — a warm detuned-saw stab shaped by a FILTER envelope (the synthwave
+//     "pluck"), with only a gentle pitch drop. No steep chip "pew", no raw open
+//     saw, no noise blip — and a reverb tail so it sits in the mix.
+function synthShot(base, vol, verb) {
+  if (!actx || muted) return;
+  const t = actx.currentTime;
+  const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 8;
+  lp.frequency.setValueAtTime(base * 3.4, t);
+  lp.frequency.exponentialRampToValueAtTime(base * 0.7, t + 0.18);        // filter pluck
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.26);
+  [-7, 7].forEach(c => {
+    const o = actx.createOscillator(); o.type = 'sawtooth'; o.detune.value = c;
+    o.frequency.setValueAtTime(base, t);
+    o.frequency.exponentialRampToValueAtTime(base * 0.74, t + 0.16);      // gentle drop, not a sweep
+    o.connect(lp); o.start(t); o.stop(t + 0.28);
+  });
+  lp.connect(g); g.connect(master); sendVerb(g, verb);
+}
+const sfxFire      = () => synthShot(760, 0.11, 0.5);                                     // player shot
+const sfxFireEnemy = () => synthShot(300, 0.05, 0.4);                                     // enemy shot (low/quiet, distinct)
 const sfxBoom      = (big) => {                                                          // (4) blast (gated-reverb feel)
   noise(0.05, big ? 0.42 : 0.3, 5000, 1000);                              // attack crack
   noise(big ? 0.55 : 0.32, big ? 0.36 : 0.24, 900, 40, big ? 0.55 : 0.35);// filtered body + reverb tail

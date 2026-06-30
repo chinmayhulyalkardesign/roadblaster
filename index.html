@@ -115,7 +115,7 @@ html, body {
     <div id="powerups"></div>
     <div class="sb-spacer"></div>
     <div class="sb-divider"></div>
-    <div class="sb-controls"><b>ARROWS</b> drive<br><b>SPACE</b> fire<br><b>SHIFT</b> turbo<br><b>M</b> sound <span id="muteState">ON</span></div>
+    <div class="sb-controls"><b>ARROWS</b> drive<br><b>SPACE</b> fire<br><b>SHIFT</b> turbo<br><b>M</b> sound <span id="muteState">ON</span><br><b>B</b> music</div>
   </div>
 
   <!-- LOADING -->
@@ -905,7 +905,7 @@ function initAudio() {
 // Press B in-game to cycle styles. Each style = tempo + chord loop + which
 // voices/patterns fire. All voices feed musicGain (muted via master).
 let STEP_DUR = 60 / 100 / 4;                            // 16th-note dur (set per style in startMusic)
-let musicStyle = 0;
+let musicStyle = 0;        // default = Darksynth (first in MUSIC_STYLES)
 const midiHz = n => 440 * Math.pow(2, (n - 69) / 12);
 const CH_SYNTH  = [ {bass:36,pad:[60,63,67]}, {bass:32,pad:[56,60,63]}, {bass:39,pad:[63,67,70]}, {bass:34,pad:[58,62,65]} ]; // Cm Ab Eb Bb
 const CH_DARK   = [ {bass:36,pad:[60,63,67]}, {bass:34,pad:[58,62,65]}, {bass:32,pad:[56,60,63]}, {bass:31,pad:[55,59,62]} ]; // Cm Bb Ab G (tense)
@@ -913,8 +913,8 @@ const CH_BRIGHT = [ {bass:45,pad:[69,72,76]}, {bass:41,pad:[65,69,72]}, {bass:48
 const ARP = [0,2,1,2, 0,2,1,2, 0,2,1,3, 2,1,0,2];
 const arpNote = (ch, s) => { const ai = ARP[s]; return ai < 3 ? ch.pad[ai] : ch.pad[0] + 12; };
 const MUSIC_STYLES = [
-  { name:'SYNTHWAVE', bpm:100, ch:CH_SYNTH,  padVol:0.085, bright:1,    det:8,  bass:'pluck', kick:'four',    snare:'back',     hat:'off8', lead:'legato' },
   { name:'DARKSYNTH', bpm:122, ch:CH_DARK,   padVol:0.07,  bright:0.55, det:10, bass:'grit',  kick:'driving', snare:'back',     hat:'s16',  lead:'none'   },
+  { name:'SYNTHWAVE', bpm:100, ch:CH_SYNTH,  padVol:0.085, bright:1,    det:8,  bass:'pluck', kick:'four',    snare:'back',     hat:'off8', lead:'legato' },
   { name:'DREAMWAVE', bpm:82,  ch:CH_SYNTH,  padVol:0.12,  bright:1.25, det:10, bass:'slow',  kick:'soft1',   snare:'none',     hat:'none', lead:'soft'   },
   { name:'OUTRUN',    bpm:128, ch:CH_BRIGHT, padVol:0.07,  bright:1.5,  det:7,  bass:'pluck', kick:'four',    snare:'back',     hat:'off8', lead:'arp'    },
   { name:'VAPORWAVE', bpm:68,  ch:CH_SYNTH,  padVol:0.11,  bright:0.8,  det:22, bass:'slow',  kick:'half',    snare:'backHalf', hat:'none', lead:'soft'   },

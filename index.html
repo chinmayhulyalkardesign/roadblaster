@@ -115,7 +115,7 @@ html, body {
     <div id="powerups"></div>
     <div class="sb-spacer"></div>
     <div class="sb-divider"></div>
-    <div class="sb-controls"><b>ARROWS</b> drive<br><b>SPACE</b> fire<br><b>SHIFT</b> turbo<br><b>M</b> sound <span id="muteState">ON</span><br><b>B</b> music</div>
+    <div class="sb-controls"><b>ARROWS</b> drive<br><b>SPACE</b> fire<br><b>SHIFT</b> turbo<br><b>M</b> sound <span id="muteState">ON</span></div>
   </div>
 
   <!-- LOADING -->
@@ -842,7 +842,6 @@ addEventListener('keyup', e => {
   if (ARROW[k]) { const d = ARROW[k]; keys[d] = false; const i = dirStack.indexOf(d); if (i >= 0) dirStack.splice(i, 1); }
   if (k === ' ' || e.code === 'Space') keys.fire = false;
   if (k === 'm') toggleMute();
-  if (k === 'b') switchMusic();   // cycle background-music style
 });
 
 // ─────────────────────────────────────────────
@@ -1035,21 +1034,6 @@ function startMusic() {
     }
   }, 25);
 }
-function switchMusic() { musicStyle = (musicStyle + 1) % MUSIC_STYLES.length; startMusic(); updateMusicLabel(); }
-function updateMusicLabel() {
-  let el = document.getElementById('musicStyleLabel');
-  if (!el) {
-    el = document.createElement('div'); el.id = 'musicStyleLabel';
-    el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:50;font:600 12px/1.5 monospace;'
-      + 'color:#c9a6ff;background:rgba(10,14,22,.82);border:1px solid #4a2a66;border-radius:6px;'
-      + 'padding:6px 10px;letter-spacing:.05em;text-align:right';
-    document.body.appendChild(el);
-  }
-  el.innerHTML = 'MUSIC <span style="opacity:.6">(' + (musicStyle + 1) + '/' + MUSIC_STYLES.length + ')</span>: '
-    + '<b style="color:#fff">' + MUSIC_STYLES[musicStyle].name + '</b><br>'
-    + '<span style="opacity:.65">press B to cycle</span>';
-}
-
 function sendVerb(g, amt) {                   // route a voice's output to the shared reverb
   if (!amt || !fxReverb) return;
   const s = actx.createGain(); s.gain.value = amt; g.connect(s); s.connect(fxReverb);
@@ -1352,6 +1336,16 @@ function enemyOnTile(tc, tr, exclude) {
   }
   return false;
 }
+// Tile is taken if a car sits on it OR has reserved it as its move target.
+// Reservations stop two cars choosing the same tile (the cause of jams/freezes).
+function enemyClaims(tc, tr, exclude) {
+  for (const en of enemies) {
+    if (en.dead || en === exclude) continue;
+    if (Math.round(en.x / TS) === tc && Math.round(en.z / TS) === tr) return true;
+    if (en.tgt && en.tgt.c === tc && en.tgt.r === tr) return true;
+  }
+  return false;
+}
 function playerOnTile(tc, tr) {
   return player && Math.round(playerX / TS) === tc && Math.round(playerZ / TS) === tr;
 }
@@ -1510,26 +1504,31 @@ function updateEnemies(dt) {
       const c = Math.round(en.x / TS), r = Math.round(en.z / TS);
       const cx = c * TS, cz = r * TS;
       const atCentre = Math.abs(en.x - cx) < 0.02 && Math.abs(en.z - cz) < 0.02;
-      const blockedTile = (dc, dr) => enemyOnTile(c + dc, r + dr, en) || playerOnTile(c + dc, r + dr);
-      // Decide direction only at tile centres (clean grid motion, no jitter)
+      if (en.bias === undefined) en.bias = (c + r) % 2 ? 1 : -1;   // stable lateral preference
+      // Re-decide each time we reach a tile centre (clean grid motion).
       if (atCentre) {
-        en.x = cx; en.z = cz;                       // exact snap to centre
+        en.x = cx; en.z = cz; en.tgt = { c, r };    // hold current cell until a move is chosen
         const roaming = frame < en.roamUntil;
-        let dir = roaming ? (roamDir(c, r, en) || nextDir(c, r)) : (nextDir(c, r) || roamDir(c, r, en));
-        if (!dir || blockedTile(dir.dc, dir.dr) || !PR.tileOK(c + dir.dc, r + dir.dr)) {
-          const opts = [[1,0],[-1,0],[0,1],[0,-1]]
-            .filter(([dc, dr]) => PR.tileOK(c + dc, r + dr) && !blockedTile(dc, dr));
-          // NOTE: `frame` is fractional (delta-time accumulation), so floor before
-          // indexing — opts[<float>] would be undefined and crash the whole loop.
-          const pick = opts.length ? opts[(spawnedCount + Math.floor(frame)) % opts.length] : null;
-          dir = pick ? { dc: pick[0], dr: pick[1] } : null;
+        const pref = roaming ? (roamDir(c, r, en) || nextDir(c, r)) : (nextDir(c, r) || roamDir(c, r, en));
+        // Try preferred dir first, then the two laterals, then reverse — so a car
+        // routes AROUND a blockage and can back out of a dead-end instead of freezing.
+        const order = [];
+        if (pref) order.push([pref.dc, pref.dr]);
+        const lat = (pref && pref.dc !== 0) ? [[0, en.bias], [0, -en.bias]] : [[en.bias, 0], [-en.bias, 0]];
+        order.push(lat[0], lat[1]);
+        if (pref) order.push([-pref.dc, -pref.dr]);
+        [[1,0],[-1,0],[0,1],[0,-1]].forEach(d => { if (!order.some(o => o[0] === d[0] && o[1] === d[1])) order.push(d); });
+        let chosen = null;
+        for (const [dc, dr] of order) {
+          if (PR.tileOK(c + dc, r + dr) && !enemyClaims(c + dc, r + dr, en) && !playerOnTile(c + dc, r + dr)) { chosen = { dc, dr }; break; }
         }
-        en.dir = dir;
+        en.dir = chosen;
+        if (chosen) en.tgt = { c: c + chosen.dc, r: r + chosen.dr };   // reserve the target tile
       }
-      // Move toward the next tile centre, clamped so we land exactly on it
-      if (en.dir && !blockedTile(en.dir.dc, en.dir.dr)) {
+      // Drive toward the reserved target centre, clamped to land exactly on it.
+      if (en.dir && en.tgt) {
         const step = en.speed * dt;
-        const tx = (c + en.dir.dc) * TS, tz = (r + en.dir.dr) * TS;
+        const tx = en.tgt.c * TS, tz = en.tgt.r * TS;
         const sx = tx - en.x, sz = tz - en.z;
         en.x += Math.abs(sx) <= step ? sx : Math.sign(sx) * step;
         en.z += Math.abs(sz) <= step ? sz : Math.sign(sz) * step;
@@ -1723,7 +1722,6 @@ document.getElementById('startBtn').addEventListener('click', () => {
   document.getElementById('start').style.display = 'none';
   lastSpawn = frame;            // begin spawning from the moment play starts
   gameState = 'play';
-  updateMusicLabel();           // show the music-style switcher
 });
 document.getElementById('restartBtn').addEventListener('click', () => location.reload());
 

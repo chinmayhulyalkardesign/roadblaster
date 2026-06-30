@@ -842,6 +842,7 @@ addEventListener('keyup', e => {
   if (ARROW[k]) { const d = ARROW[k]; keys[d] = false; const i = dirStack.indexOf(d); if (i >= 0) dirStack.splice(i, 1); }
   if (k === ' ' || e.code === 'Space') keys.fire = false;
   if (k === 'm') toggleMute();
+  if (k === 'b') switchMusic();   // cycle background-music style
 });
 
 // ─────────────────────────────────────────────
@@ -900,36 +901,44 @@ function initAudio() {
   startMusic();   // (3) synthwave / outrun loop
 }
 
-// ─── Synthwave / Outrun loop (procedural step sequencer) ───────────────────
-// Lush detuned-saw pads + plucky bass + four-on-the-floor groove + soft arp.
-const BPM = 100, STEP_DUR = 60 / BPM / 4;             // 16th-note duration
+// ─── Background music (procedural step sequencer, switchable styles) ───────
+// Press B in-game to cycle styles. Each style = tempo + chord loop + which
+// voices/patterns fire. All voices feed musicGain (muted via master).
+let STEP_DUR = 60 / 100 / 4;                            // 16th-note dur (set per style in startMusic)
+let musicStyle = 0;
 const midiHz = n => 440 * Math.pow(2, (n - 69) / 12);
-const CHORDS = [                                       // Cm – Ab – Eb – Bb (i–VI–III–VII)
-  { bass: 36, pad: [60, 63, 67] },   // Cm
-  { bass: 32, pad: [56, 60, 63] },   // Ab
-  { bass: 39, pad: [63, 67, 70] },   // Eb
-  { bass: 34, pad: [58, 62, 65] },   // Bb
+const CH_SYNTH  = [ {bass:36,pad:[60,63,67]}, {bass:32,pad:[56,60,63]}, {bass:39,pad:[63,67,70]}, {bass:34,pad:[58,62,65]} ]; // Cm Ab Eb Bb
+const CH_DARK   = [ {bass:36,pad:[60,63,67]}, {bass:34,pad:[58,62,65]}, {bass:32,pad:[56,60,63]}, {bass:31,pad:[55,59,62]} ]; // Cm Bb Ab G (tense)
+const CH_BRIGHT = [ {bass:45,pad:[69,72,76]}, {bass:41,pad:[65,69,72]}, {bass:48,pad:[72,76,79]}, {bass:43,pad:[67,71,74]} ]; // Am F C G (bright)
+const ARP = [0,2,1,2, 0,2,1,2, 0,2,1,3, 2,1,0,2];
+const arpNote = (ch, s) => { const ai = ARP[s]; return ai < 3 ? ch.pad[ai] : ch.pad[0] + 12; };
+const MUSIC_STYLES = [
+  { name:'SYNTHWAVE', bpm:100, ch:CH_SYNTH,  padVol:0.085, bright:1,    det:8,  bass:'pluck', kick:'four',    snare:'back',     hat:'off8', lead:'legato' },
+  { name:'DARKSYNTH', bpm:122, ch:CH_DARK,   padVol:0.07,  bright:0.55, det:10, bass:'grit',  kick:'driving', snare:'back',     hat:'s16',  lead:'none'   },
+  { name:'DREAMWAVE', bpm:82,  ch:CH_SYNTH,  padVol:0.12,  bright:1.25, det:10, bass:'slow',  kick:'soft1',   snare:'none',     hat:'none', lead:'soft'   },
+  { name:'OUTRUN',    bpm:128, ch:CH_BRIGHT, padVol:0.07,  bright:1.5,  det:7,  bass:'pluck', kick:'four',    snare:'back',     hat:'off8', lead:'arp'    },
+  { name:'VAPORWAVE', bpm:68,  ch:CH_SYNTH,  padVol:0.11,  bright:0.8,  det:22, bass:'slow',  kick:'half',    snare:'backHalf', hat:'none', lead:'soft'   },
 ];
-const ARP = [0,2,1,2, 0,2,1,2, 0,2,1,3, 2,1,0,2];      // index into pad[] (3 = root+octave)
 
-// Lush detuned-saw pad voice (the synthwave signature) — slow swell, filter bloom
-function padVoice(freq, t, dur, vol) {
+// Lush detuned-saw pad — slow swell, filter bloom (bright scales cutoff, det = width)
+function padVoice(freq, t, dur, vol, bright, det) {
+  bright = bright || 1; det = det || 8;
   const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 4;
-  lp.frequency.setValueAtTime(600, t);
-  lp.frequency.linearRampToValueAtTime(2400, t + dur * 0.5);
-  lp.frequency.linearRampToValueAtTime(700, t + dur);
+  lp.frequency.setValueAtTime(600 * bright, t);
+  lp.frequency.linearRampToValueAtTime(2400 * bright, t + dur * 0.5);
+  lp.frequency.linearRampToValueAtTime(700 * bright, t + dur);
   const g = actx.createGain();
   g.gain.setValueAtTime(0.0001, t);
   g.gain.linearRampToValueAtTime(vol, t + dur * 0.3);
   g.gain.setValueAtTime(vol, t + dur * 0.7);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  [-8, 8].forEach(c => {
+  [-det, det].forEach(c => {
     const o = actx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = freq; o.detune.value = c;
     o.connect(lp); o.start(t); o.stop(t + dur + 0.05);
   });
   lp.connect(g); g.connect(musicGain);
 }
-// Plucky saw bass with a fast filter-decay "pluck"
+// Plucky saw bass (synthwave/outrun)
 function bassVoice(freq, t, dur, vol) {
   const lp = actx.createBiquadFilter(); lp.type = 'lowpass';
   lp.frequency.setValueAtTime(1700, t); lp.frequency.exponentialRampToValueAtTime(180, t + dur * 0.9);
@@ -939,7 +948,26 @@ function bassVoice(freq, t, dur, vol) {
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
   o.connect(lp); lp.connect(g); g.connect(musicGain); o.start(t); o.stop(t + dur + 0.02);
 }
-// Warm detuned-saw lead — pure analog synthwave (no square/chip tone), legato tail
+// Gritty distorted bass (darksynth) — saw through a tanh waveshaper
+const DIST_CURVE = (() => { const n = 256, c = new Float32Array(n); for (let i = 0; i < n; i++) { const x = i * 2 / n - 1; c[i] = Math.tanh(x * 4); } return c; })();
+function bassGrit(freq, t, dur, vol) {
+  const o = actx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = freq;
+  const ws = actx.createWaveShaper(); ws.curve = DIST_CURVE;
+  const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 700;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+  g.gain.setValueAtTime(vol, t + dur * 0.6); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(ws); ws.connect(lp); lp.connect(g); g.connect(musicGain); o.start(t); o.stop(t + dur + 0.02);
+}
+// Slow sustained sub bass (dreamwave/vaporwave)
+function bassSlow(freq, t, dur, vol) {
+  const o = actx.createOscillator(); o.type = 'triangle'; o.frequency.value = freq;
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.06);
+  g.gain.setValueAtTime(vol, t + dur * 0.7); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(musicGain); o.start(t); o.stop(t + dur + 0.02);
+}
+// Warm detuned-saw lead (no chip tone)
 function leadVoice(freq, t, dur, vol) {
   const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200; lp.Q.value = 1;
   const g = actx.createGain();
@@ -961,6 +989,8 @@ function drumNoise(t, dur, vol, type, freq, q) {
   const g = actx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
   n.connect(f); f.connect(g); g.connect(musicGain); n.start(t); n.stop(t + dur + 0.02);
 }
+const snare = t => drumNoise(t, 0.18, 0.4, 'bandpass', 1900, 0.7);
+const hat   = (t, dur, vol) => drumNoise(t, dur, vol, 'highpass', 8000);
 function kick(t) {
   const o = actx.createOscillator(); o.type = 'sine';
   o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(48, t + 0.12);
@@ -968,27 +998,56 @@ function kick(t) {
   o.connect(g); g.connect(musicGain); o.start(t); o.stop(t + 0.2);
 }
 function playStep(step, t) {
-  const ch = CHORDS[Math.floor(step / 16) % CHORDS.length], s = step % 16;
-  if (s === 0) ch.pad.forEach(m => padVoice(midiHz(m), t, STEP_DUR * 16, 0.085));   // sustained pad chord
-  if (s % 2 === 0) bassVoice(midiHz(ch.bass + (s % 4 === 2 ? 12 : 0)), t, STEP_DUR * 1.6, 0.42);  // driving bass
-  if (s % 4 === 0) kick(t);                                       // four-on-the-floor
-  if (s === 4 || s === 12) drumNoise(t, 0.18, 0.4, 'bandpass', 1900, 0.7);  // snare/clap backbeat
-  if (s % 4 === 2) drumNoise(t, 0.04, 0.14, 'highpass', 8000);    // offbeat closed hat
-  const ai = ARP[s], an = ai < 3 ? ch.pad[ai] : ch.pad[0] + 12;
-  if (s % 2 === 1) leadVoice(midiHz(an + 12), t, STEP_DUR * 1.5, 0.055);    // legato saw lead (notes blend, not chippy)
+  const st = MUSIC_STYLES[musicStyle], ch = st.ch[Math.floor(step / 16) % st.ch.length], s = step % 16;
+  if (s === 0) ch.pad.forEach(m => padVoice(midiHz(m), t, STEP_DUR * 16, st.padVol, st.bright, st.det));  // pad chord
+  // bass
+  if      (st.bass === 'pluck' && s % 2 === 0) bassVoice(midiHz(ch.bass + (s % 4 === 2 ? 12 : 0)), t, STEP_DUR * 1.6, 0.42);
+  else if (st.bass === 'grit'  && s % 2 === 0) bassGrit(midiHz(ch.bass), t, STEP_DUR * 1.8, 0.4);
+  else if (st.bass === 'slow'  && s === 0)     bassSlow(midiHz(ch.bass), t, STEP_DUR * 14, 0.34);
+  // kick
+  if      (st.kick === 'four'    && s % 4 === 0) kick(t);
+  else if (st.kick === 'driving' && (s % 4 === 0 || s === 6 || s === 14)) kick(t);
+  else if (st.kick === 'soft1'   && s === 0) kick(t);
+  else if (st.kick === 'half'    && (s === 0 || s === 8)) kick(t);
+  // snare + hat
+  if      (st.snare === 'back'     && (s === 4 || s === 12)) snare(t);
+  else if (st.snare === 'backHalf' && s === 8) snare(t);
+  if      (st.hat === 'off8' && s % 4 === 2) hat(t, 0.04, 0.14);
+  else if (st.hat === 's16'  && s % 2 === 1) hat(t, 0.03, 0.1);
+  // lead
+  if      (st.lead === 'legato' && s % 2 === 1) leadVoice(midiHz(arpNote(ch, s) + 12), t, STEP_DUR * 1.5, 0.055);
+  else if (st.lead === 'arp')                   leadVoice(midiHz(arpNote(ch, s) + 12), t, STEP_DUR * 0.9, 0.05);
+  else if (st.lead === 'soft' && s % 4 === 1)   leadVoice(midiHz(arpNote(ch, s) + 12), t, STEP_DUR * 3, 0.04);
 }
 function startMusic() {
-  if (!actx || seqTimer) return;
-  musicGain = actx.createGain(); musicGain.gain.value = 0.32; musicGain.connect(master);
+  if (!actx) return;
+  if (!musicGain) { musicGain = actx.createGain(); musicGain.gain.value = 0.32; musicGain.connect(master); }
+  if (seqTimer) clearInterval(seqTimer);
+  STEP_DUR = 60 / MUSIC_STYLES[musicStyle].bpm / 4;
   seqStep = 0; nextNoteT = actx.currentTime + 0.15;
   seqTimer = setInterval(() => {
     if (!actx || actx.state !== 'running') return;     // don't pile up while suspended
+    const loop = 16 * MUSIC_STYLES[musicStyle].ch.length;
     while (nextNoteT < actx.currentTime + 0.12) {
       playStep(seqStep, nextNoteT);
       nextNoteT += STEP_DUR;
-      seqStep = (seqStep + 1) % (16 * CHORDS.length);   // 4-bar loop
+      seqStep = (seqStep + 1) % loop;
     }
   }, 25);
+}
+function switchMusic() { musicStyle = (musicStyle + 1) % MUSIC_STYLES.length; startMusic(); updateMusicLabel(); }
+function updateMusicLabel() {
+  let el = document.getElementById('musicStyleLabel');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'musicStyleLabel';
+    el.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:50;font:600 12px/1.5 monospace;'
+      + 'color:#c9a6ff;background:rgba(10,14,22,.82);border:1px solid #4a2a66;border-radius:6px;'
+      + 'padding:6px 10px;letter-spacing:.05em;text-align:right';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = 'MUSIC <span style="opacity:.6">(' + (musicStyle + 1) + '/' + MUSIC_STYLES.length + ')</span>: '
+    + '<b style="color:#fff">' + MUSIC_STYLES[musicStyle].name + '</b><br>'
+    + '<span style="opacity:.65">press B to cycle</span>';
 }
 
 function sendVerb(g, amt) {                   // route a voice's output to the shared reverb
@@ -1664,6 +1723,7 @@ document.getElementById('startBtn').addEventListener('click', () => {
   document.getElementById('start').style.display = 'none';
   lastSpawn = frame;            // begin spawning from the moment play starts
   gameState = 'play';
+  updateMusicLabel();           // show the music-style switcher
 });
 document.getElementById('restartBtn').addEventListener('click', () => location.reload());
 
